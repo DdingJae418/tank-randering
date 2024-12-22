@@ -39,7 +39,7 @@
 
             const format_depth_texture = 'depth24plus';
 
-            const light_direction = [-0.5, -0.7, -1];
+            const light_direction = [-0.5, -0.5, -0.5];
 
 
 
@@ -396,7 +396,7 @@
                         output.uv = uv;
                         output.pos = position;
                         let surfaceWorldPosition = (uni.world * vec4f(position, 1.0)).xyz;
-                        output.surfaceToView = uni.viewWorldPosition - surfaceWorldPosition;
+                        output.surfaceToView = -uni.viewWorldPosition - surfaceWorldPosition;
 
                         return output;
                     }
@@ -440,7 +440,7 @@
                         // Final color calculation
                         let diffuse = (texColor.rgb * light) * ao;
                         let finalColor = diffuse + specular * metalness + ambient;
-
+                            
                         return vec4f(finalColor, texColor.a);
                     }
 
@@ -723,7 +723,7 @@
                         output.uv = uv;
                         output.pos = position;
                         let surfaceWorldPosition = (uni.world * vec4f(position, 1.0)).xyz;
-                        output.surfaceToView = uni.viewWorldPosition - surfaceWorldPosition;
+                        output.surfaceToView = -uni.viewWorldPosition - surfaceWorldPosition;
 
                         return output;
                     }
