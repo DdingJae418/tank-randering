@@ -1,10 +1,10 @@
 
 <!-- saved from url=(0055)https://minho-kim-uos.github.io/webgpu/src/examine.html -->
 <html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-        <title>Examine the Scene</title>
+        <title>Control the Tank</title>
     </head>
     <body>
-        <h1 align="center">Examine the Scene</h1>
+        <h1 align="center">Control the Tank</h1>
         <script type="importmap">
         {
             "imports": {
@@ -173,99 +173,109 @@
 
                 const tankAxes = createAxes(device, preferredFormat);
 
-                // GLTF 계층 구조 파싱
+                // Parse GLTF hierarchy
                 const bodyNode = root.scene.children[0].children.find(child => child.name === "nodebody");
                 const turretNode = bodyNode.children.find(child => child.name === "nodeturret");
                 const barrelNode = turretNode.children.find(child => child.name === "nodebarrel");
 
-                let shells = []; // Shell 객체를 저장하는 배열
-                let isPaused = false; // Shell 이동을 멈추는 상태를 추적
+                let shells = []; // Array to store shell objects
+                let isPaused = false; // Track whether shell movement is paused
                 let barrelWorldMatrix;
 
+                // Add this part to the script
+                const currentKeyElement = document.querySelector("#current-key");
+
                 document.addEventListener("keydown", (event) => {
-                    const rotationYStep = utils.degToRad(10); // 회전 각도 (10도씩)
-                    const rotationZStep = utils.degToRad(5); // 회전 각도 (10도씩)
-                    const translationStep = 1; // 이동 거리 (1 단위)
-                    const minBarrelAngle = 0; // 최소 각도 (0도)
-                    const maxBarrelAngle = utils.degToRad(50); // 최대 각도 (60도)
-                
+                    const keyPressed = event.key;
+                    const rotationYStep = utils.degToRad(10); // Rotation angle for Y-axis (10 degrees per step)
+                    const rotationZStep = utils.degToRad(5); // Rotation angle for Z-axis (5 degrees per step)
+                    const translationStep = 1; // Translation distance per step
+                    const minBarrelAngle = 0; // Minimum barrel angle (0 degrees)
+                    const maxBarrelAngle = utils.degToRad(50); // Maximum barrel angle (50 degrees)
+
                     if (event.key === "ArrowUp") {
-                        // 현재 bodyNode의 회전을 기반으로 이동 방향 벡터 계산
+                        // Calculate forward movement direction based on bodyNode's rotation
                         const forwardVector = vec3.create(
-                            Math.cos(-bodyNode.rotation.y) * translationStep, // x 축 이동량
-                            0,                                              // y 축 이동량
-                            Math.sin(-bodyNode.rotation.y) * translationStep // z 축 이동량
+                            Math.cos(-bodyNode.rotation.y) * translationStep, // X-axis movement
+                            0,                                              // Y-axis movement
+                            Math.sin(-bodyNode.rotation.y) * translationStep // Z-axis movement
                         );
                         bodyNode.position.x += forwardVector[0];
                         bodyNode.position.z += forwardVector[2];
                     } else if (event.key === "ArrowDown") {
-                        // 뒤로 이동 (forwardVector의 반대 방향)
+                        // Move backward (opposite direction of forwardVector)
                         const backwardVector = vec3.create(
-                            -Math.cos(-bodyNode.rotation.y) * translationStep, // x 축 이동량
-                            0,                                               // y 축 이동량
-                            -Math.sin(-bodyNode.rotation.y) * translationStep // z 축 이동량
+                            -Math.cos(-bodyNode.rotation.y) * translationStep, // X-axis movement
+                            0,                                                // Y-axis movement
+                            -Math.sin(-bodyNode.rotation.y) * translationStep // Z-axis movement
                         );
                         bodyNode.position.x += backwardVector[0];
                         bodyNode.position.z += backwardVector[2];
                     } else if (event.key === "ArrowLeft") {
-                        // 왼쪽으로 회전
+                        // Rotate bodyNode to the left
                         bodyNode.rotation.y += rotationYStep;
                     } else if (event.key === "ArrowRight") {
-                        // 오른쪽으로 회전
+                        // Rotate bodyNode to the right
                         bodyNode.rotation.y -= rotationYStep;
-                    } else if (event.key === "a") {
-                        // Turret을 왼쪽으로 회전
+                    } else if (event.key === "a" || event.key === "ㅁ") {
+                        // Rotate turretNode to the left
                         turretNode.rotation.y += rotationYStep;
-                    } else if (event.key === "d") {
-                        // Turret을 오른쪽으로 회전
+                    } else if (event.key === "d" || event.key === "ㅇ") {
+                        // Rotate turretNode to the right
                         turretNode.rotation.y -= rotationYStep;
-                    } else if (event.key === "w") {
-                        // Barrel을 위로 회전 (최대 60도까지)
+                    } else if (event.key === "w" || event.key === "ㅈ") {
+                        // Rotate barrelNode upward (up to the maximum angle)
                         barrelNode.rotation.z = Math.min(barrelNode.rotation.z + rotationZStep, maxBarrelAngle);
-                    } else if (event.key === "s") {
-                        // Barrel을 아래로 회전 (최소 0도까지)
+                    } else if (event.key === "s" || event.key === "ㄴ") {
+                        // Rotate barrelNode downward (down to the minimum angle)
                         barrelNode.rotation.z = Math.max(barrelNode.rotation.z - rotationZStep, minBarrelAngle);
                     } else if (event.key === " ") {
-                        // Shell 생성
+                        // Create a new shell
                         loadShellobj(device, preferredFormat).then((shell) => {    
-                            // Barrel과 Turret의 월드 행렬 계산
-                            const barrelWorldPosition = vec3.transformMat4(vec3.create(0, 0, 0), barrelWorldMatrix);
                             
-                            // Barrel과 Turret의 회전값을 기반으로 방향 벡터 계산
+                            // Calculate direction vector based on barrel, turret, and body rotation
                             const barrelWorldRotationZ = barrelNode.rotation.z + utils.degToRad(10);
                             const turretWorldRotationY = turretNode.rotation.y;
+                            const bodyWorldRotationY = bodyNode.rotation.y;
                         
-                            // Barrel과 Turret의 회전 행렬 생성
+                            // Create rotation matrices for Z and Y axes
                             const rotationZMatrix = mat4.rotateZ(mat4.identity(), barrelWorldRotationZ);
-                            const rotationYMatrix = mat4.rotateY(mat4.identity(), turretWorldRotationY);
-                            
-                            // Z축 및 Y축 회전을 결합한 최종 회전 행렬
-                            const combinedRotationMatrix = mat4.multiply(rotationYMatrix, rotationZMatrix);
+                            const turretRotationYMatrix = mat4.rotateY(mat4.identity(), turretWorldRotationY);
+                            const bodyRotationYMatrix = mat4.rotateY(mat4.identity(), bodyWorldRotationY);
                         
-                            // 기본 방향 벡터 (x축 기준)를 회전
+                            // Combine body, turret, and barrel rotations into a single matrix
+                            const combinedRotationMatrix = mat4.multiply(
+                                mat4.multiply(bodyRotationYMatrix, turretRotationYMatrix),
+                                rotationZMatrix
+                            );
+                        
+                            // Transform default direction vector (along X-axis)
                             const barrelWorldDirection = vec3.transformMat4(vec3.create(1, 0, 0), combinedRotationMatrix);
                         
-                            // 방향 벡터 정규화
+                            // Normalize direction vector
                             vec3.normalize(barrelWorldDirection, barrelWorldDirection);
                         
-                            // Shell의 초기 위치와 회전값 설정
+                            // Set initial position and rotation for the shell
                             const initialPosition = vec3.transformMat4(vec3.create(0.73, 0.14, 0), barrelWorldMatrix);
                         
                             shells.push({
                                 render: shell.render,
                                 position: initialPosition,
                                 direction: barrelWorldDirection,
-                                velocity: 0.5, // 초기 속도
+                                velocity: 0.5, // Initial speed
                                 rotationMatrix: combinedRotationMatrix,
                             });
                         });
-                    } else if (event.key === "p") {
-                        // Shell 이동 정지/재개
+                    } else if (event.key === "p" || event.key === "ㅔ") {
+                        // Toggle shell movement pause/resume
                         isPaused = !isPaused;
                     }
-                
-                    // 변경 사항을 씬에 반영
+
+                    // Update the scene to reflect changes
                     root.scene.updateMatrixWorld();
+
+                    // Update the current key text in the HTML
+                    currentKeyElement.textContent = keyPressed;
                 });
 
                 const buffers = {};
@@ -494,7 +504,6 @@
                     },
                 });
             
-                // 렌더링 함수
                 function render(renderPass, baseMatrix, UI) {
                     const stack = [mat4.identity()]
                     let MVP = stack[stack.length - 1];
@@ -510,7 +519,7 @@
 
                     // Apply body position and rotation
                     stack.push(mat4.translate(mat4.clone(MVP), [...bodyNode.position]));
-                    stack[stack.length - 1] = mat4.rotateY(stack[stack.length - 1], bodyNode.rotation.y); // Y축 회전
+                    stack[stack.length - 1] = mat4.rotateY(stack[stack.length - 1], bodyNode.rotation.y);
                     MVP = stack[stack.length - 1];
 
                     worldValue.set(MVP);
@@ -533,8 +542,8 @@
                     renderPass.setIndexBuffer(buffers.turret.index, "uint32");
 
                     // Apply turret position and rotation
-                    stack.push(mat4.translate(mat4.clone(MVP), [...turretNode.position])); // Turret 위치
-                    stack[stack.length - 1] = mat4.rotateY(stack[stack.length - 1], turretNode.rotation.y); // Y축 회전
+                    stack.push(mat4.translate(mat4.clone(MVP), [...turretNode.position]));
+                    stack[stack.length - 1] = mat4.rotateY(stack[stack.length - 1], turretNode.rotation.y);
                     MVP = stack[stack.length - 1];
 
                     worldValue.set(mat4.translate(mat4.clone(MVP), [...buffers.turret.localPosition]));
@@ -552,8 +561,8 @@
                     renderPass.setIndexBuffer(buffers.barrel.index, "uint32");
 
                     // Apply barrel position and rotation
-                    stack.push(mat4.translate(mat4.clone(MVP), [...barrelNode.position])); // Barrel 위치
-                    stack[stack.length - 1] = mat4.rotateZ(stack[stack.length - 1], barrelNode.rotation.z); // Z축 회전
+                    stack.push(mat4.translate(mat4.clone(MVP), [...barrelNode.position]));
+                    stack[stack.length - 1] = mat4.rotateZ(stack[stack.length - 1], barrelNode.rotation.z);
                     MVP = stack[stack.length - 1];
 
                     worldValue.set(mat4.translate(mat4.clone(MVP), [...buffers.barrel.localPosition]))
@@ -564,38 +573,33 @@
                     
                     barrelWorldMatrix = MVP;
 
-                    // Shell 렌더링 및 업데이트
+                    // Shell rendering and update
                     const updatedShells = [];
                     shells.forEach((shell) => {
                         if (!isPaused) {
-                            // 중력 벡터 정의 (아래로 향하는 힘)
                             const gravity = vec3.create(0, -0.01, 0);
                     
-                            // Shell 방향에 중력 적용
+                            // Adjust gravity
                             shell.direction = vec3.add(shell.direction, gravity);
-                            vec3.normalize(shell.direction, shell.direction); // 방향 벡터 정규화
+                            vec3.normalize(shell.direction, shell.direction);
                     
-                            // Shell 위치 업데이트
+                            // Update shell position
                             shell.position = vec3.add(
                                 shell.position,
                                 vec3.scale(shell.direction, shell.velocity * 0.1)
                             );
                     
-                            // 로컬 Z축 회전 적용 (로컬 회전 행렬 갱신)
-                            const zRotationMatrix = mat4.rotateZ(mat4.identity(), -utils.degToRad(0.5)); // 1도씩 회전
+                            // Rotate z axis as falling
+                            const zRotationMatrix = mat4.rotateZ(mat4.identity(), -utils.degToRad(0.5));
                             shell.rotationMatrix = mat4.multiply(shell.rotationMatrix, zRotationMatrix);
                         }
-                    
-                        // Shell 삭제 조건
+
                         if (shell.position[1] > 0) {
-                            // Shell 행렬 생성 (위치 + 회전)
                             let shellMatrix = mat4.translate(mat4.identity(), shell.position);
                             shellMatrix = mat4.multiply(shellMatrix, shell.rotationMatrix);
-                    
-                            // Shell 렌더링
+
                             shell.render(renderPass, mat4.multiply(baseMatrix, shellMatrix), UI);
                     
-                            // 여전히 씬에 남아있는 Shell만 유지
                             updatedShells.push(shell);
                         }
                     });
@@ -824,7 +828,6 @@
                     },
                 });
             
-                // 렌더링 함수
                 function render(renderPass, baseMatrix, UI) {
                     lightDirectionValue.set(vec3.normalize(light_direction));
                     viewWorldPositionValue.set(UI.camera.position);
@@ -1201,11 +1204,9 @@
                 </div>
             </td></tr>
             <tr><td>
-                <ul>
-                    <li>rotation: dragging with left mouse button</li>
-                    <li>moving forward/backward: mouse wheel</li>
-                    <li>translation (left/right/up/down): dragging with middle mouse button</li>
-                </ul>
+                <div align="center" id="key-info">
+                    The key "<span id="current-key">None</span>" is down.
+                </div>
             </td></tr>
         </tbody></table>
 
