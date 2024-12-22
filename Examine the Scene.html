@@ -1,0 +1,623 @@
+
+<!-- saved from url=(0055)https://minho-kim-uos.github.io/webgpu/src/examine.html -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+        <title>Examine the Scene</title>
+    </head>
+    <body>
+        <h1 align="center">Examine the Scene</h1>
+        <script type="importmap">
+        {
+            "imports": {
+                "three": "https://threejs.org/build/three.module.min.js",
+                "three/addons/": "https://threejs.org/examples/jsm/",
+                "wgpu-matrix": "https://wgpu-matrix.org/dist/2.x/wgpu-matrix.module.min.js"
+            }
+
+
+        }</script>
+        <script type="module">
+            import*as THREE from 'three'
+            import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+            import {vec2, vec3, vec4, mat4, utils} from 'wgpu-matrix';
+
+            const loc_position = 3;
+            const loc_normal = 2;
+            const loc_inter_stage_normal = 1;
+
+            const id_group = 0;
+            const binding_matrices = 7;
+            const binding_sampler = 1;
+            const binding_color_texture = 2;
+            const binding_etc_texture = 3;
+
+            const format_depth_texture = 'depth24plus';
+
+
+
+            async function main() {
+                const adapter = await navigator.gpu?.requestAdapter();
+                const device = await adapter?.requestDevice();
+                if(!device) {
+                    throw Error("WebGPU not supported.");
+                }
+                const canvas = document.querySelector("#webgpu");
+                const context = canvas.getContext("webgpu");
+                const preferredFormat = navigator.gpu.getPreferredCanvasFormat();
+                context.configure({
+                    device,
+                    format: preferredFormat,
+                });
+                let canvasTexture = context.getCurrentTexture();
+
+                class UI {
+                    static NONE = 0;
+                    static ROTATING = 1;
+                    static TRANSLATING = 2;
+                    static mouseMove = UI.NONE;
+                    static camera = {fovy:60, position:vec3.create(0,0,-3), near:0.1, far:100};
+                    static matrices = {
+                        P: mat4.perspective(utils.degToRad(UI.camera.fovy), canvasTexture.width/canvasTexture.height, UI.camera.near, UI.camera.far),
+                        R: mat4.identity(),
+                    };
+                    static onmousedown(ev) {
+                        if(ev.buttons & 1)  { UI.mouseMove = UI.ROTATING; }
+                        else if(ev.buttons & 4) { UI.mouseMove = UI.TRANSLATING ; }
+                    };
+                    static onmouseup(ev) {
+                        UI.mouseMove = UI.NONE;
+                    };
+                    static onmousemove(ev) {
+                        let offset = [ev.movementX, ev.movementY];
+                        if (UI.mouseMove == UI.ROTATING) {
+                            UI.update_VP();
+                            let axis = unproject_vector([offset[1], offset[0], 0], UI.matrices.VP,
+                                [0, 0, canvas.clientWidth, canvas.clientHeight]);
+                            UI.matrices.R = mat4.rotate(UI.matrices.R, [axis[0], axis[1], axis[2]], utils.degToRad(vec2.lenSq(offset)*0.1)); 
+                        }
+                        else if(UI.mouseMove == UI.TRANSLATING) {
+                            UI.update_VP();
+                            let by = unproject_vector([offset[0], -offset[1], 0], UI.matrices.VP,
+                                [0, 0, canvas.clientWidth, canvas.clientHeight]);
+                            UI.camera.position = vec3.add(UI.camera.position, vec3.transformMat4(vec3.create(by[0], by[1], by[2]), UI.matrices.R));
+                        }
+                    };
+                    static onwheel(ev) {
+                        ev.preventDefault();
+                        UI.camera.position[2] = -Math.max(1, Math.min(-UI.camera.position[2] + ev.deltaY*0.01, 50));
+                        UI.update_VP();
+                    };
+                    static update_VP() {
+                        UI.matrices.VP = mat4.multiply(mat4.translate(UI.matrices.P, UI.camera.position),UI.matrices.R);
+                    }
+                };
+
+                UI.update_VP();
+
+
+                canvas.onmousedown = UI.onmousedown;
+                canvas.onmouseup = UI.onmouseup;
+                canvas.onmousemove = UI.onmousemove;
+                window.addEventListener("wheel", UI.onwheel, {passive:false});
+            
+
+                const line = createGridAndAxes(device, preferredFormat);
+                const tank = await loadTankGLTF(device, preferredFormat);
+
+                const depthTexture = device.createTexture({
+                    size: [canvasTexture.width, canvasTexture.height],
+                    format: format_depth_texture,
+                    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+                });
+ 
+
+                let M = mat4.identity();
+
+                let MVP;
+
+                function render(time) {
+                    
+                    canvasTexture = context.getCurrentTexture();
+                        
+                    const encoder = device.createCommandEncoder();
+                    const renderPass = encoder.beginRenderPass({
+                        colorAttachments: [{
+                            view: canvasTexture.createView(),
+                            loadOp: "clear",
+                            clearValue: {r:.3, g:.3, b:.3, a:1},
+                            storeOp: "store",
+                        }],
+                        depthStencilAttachment: {
+                            view: depthTexture.createView(),
+                            depthClearValue: 1.0,
+                            depthLoadOp: 'clear',
+                            depthStoreOp: 'store',
+                        },
+                    });
+
+                    // Render grid and model
+                    MVP = mat4.multiply(UI.matrices.VP, M);
+                    line.render(renderPass, MVP);
+                    tank.render(renderPass, MVP);
+
+                    renderPass.end();
+                    const commandBuffer = encoder.finish();
+                    device.queue.submit([commandBuffer]);
+
+                    requestAnimationFrame(render);
+                }
+
+                requestAnimationFrame(render);
+
+            }
+            
+            async function loadTankGLTF(device, preferredFormat) {
+                const loader = new GLTFLoader();
+            
+                const root = await new Promise((resolve, reject) => {
+                    loader.load(
+                        "./tank.glb",
+                        (model) => resolve(model),
+                        null,
+                        (error) => reject(error)
+                    );
+                });
+
+                // GLTF 계층 구조 파싱
+                const bodyNode = root.scene.children[0].children.find(child => child.name === "nodebody");
+                const turretNode = bodyNode.children.find(child => child.name === "nodeturret");
+                const barrelNode = turretNode.children.find(child => child.name === "nodebarrel");
+            
+                const buffers = {};
+            
+                function processMesh(node, name) {
+                    const meshNode = node.children.find(child => child.name === name);
+                    const geometry = meshNode.geometry; // 이름 기반으로 메시 찾기
+                    const positions = geometry.attributes.position.array;
+                    const normals = geometry.attributes.normal.array;
+                    const uvs = geometry.attributes.uv.array;
+                    const indices = new Uint32Array(geometry.index.array);
+                    const localPosition = meshNode.position;
+            
+                    buffers[name] = {
+                        position: device.createBuffer({
+                            size: positions.byteLength,
+                            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                        }),
+                        normal: device.createBuffer({
+                            size: normals.byteLength,
+                            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                        }),
+                        uv: device.createBuffer({
+                            size: uvs.byteLength,
+                            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+                        }),
+                        index: device.createBuffer({
+                            size: indices.byteLength,
+                            usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+                        }),
+                        count: indices.length,
+                        localPosition: localPosition
+                    };
+            
+                    device.queue.writeBuffer(buffers[name].position, 0, positions);
+                    device.queue.writeBuffer(buffers[name].normal, 0, normals);
+                    device.queue.writeBuffer(buffers[name].uv, 0, uvs);
+                    device.queue.writeBuffer(buffers[name].index, 0, indices);
+                }
+            
+                // 각 계층의 메쉬를 처리
+                processMesh(bodyNode, "body");
+                processMesh(turretNode, "turret");
+                processMesh(barrelNode, "barrel");
+
+                // Create textures
+                const colorTexture = await getTexture(device, "./textures/tank-color.jpg");
+                const etcTexture = await getTexture(device, "./textures/tank-etc.png")
+
+                const sampler = device.createSampler({magFilter:"linear", minFilter:"linear"});
+
+                const bindGroupLayout = createBindGroupLayout(device);
+            
+                const uniformBufferSize = (16 + 16 + 4) * 4;
+                const uniformBuffers = {
+                    body: device.createBuffer({
+                        size: uniformBufferSize,
+                        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                    }),
+                    turret: device.createBuffer({
+                        size: uniformBufferSize,
+                        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                    }),
+                    barrel: device.createBuffer({
+                        size: uniformBufferSize,
+                        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                    }),
+                };
+                
+                // offsets to the various uniform values in float32 indices
+                const uniformValues = new Float32Array(uniformBufferSize / 4);
+                const kWorldOffset = 0;
+                const kWorldViewProjectionOffset = 16;
+                const kLightDirectionOffset = 32;
+
+                
+                const worldValue = uniformValues.subarray(kWorldOffset, kWorldOffset + 16);
+                const worldViewProjectionValue = uniformValues.subarray(
+                    kWorldViewProjectionOffset, kWorldViewProjectionOffset + 16);
+                const lightDirectionValue =
+                    uniformValues.subarray(kLightDirectionOffset, kLightDirectionOffset + 3);
+            
+                const src_shaders = `
+                    struct VertexOut {
+                        @builtin(position) position: vec4f,
+                        @location(1) normal: vec3f,
+                        @location(2) uv: vec2f,
+                    };
+
+                    struct Matrices {
+                        world: mat4x4f,
+                        worldViewProjection: mat4x4f,
+                    };
+            
+                    @group(0) @binding(${binding_matrices}) var<uniform> matrices: Matrices;
+                    @group(0) @binding(${binding_sampler}) var my_sampler: sampler;
+                    @group(0) @binding(${binding_color_texture}) var colorTexture: texture_2d<f32>;
+            
+                    @vertex
+                    fn main_vert(
+                        @location(0) position: vec3f, 
+                        @location(1) normal: vec3f,
+                        @location(2) uv: vec2f
+                    ) -> VertexOut {
+                        var output: VertexOut;
+                        output.position = matrices.worldViewProjection * vec4f(position, 1.0);
+                        output.normal = normal;
+                        output.uv = uv;
+                        return output;
+                    }
+            
+                    @fragment
+                    fn main_frag(
+                        @location(1) normal: vec3f,
+                        @location(2) uv: vec2f
+                    ) -> @location(0) vec4f {
+                        let texColor = textureSample(colorTexture, my_sampler, uv);
+                        return texColor;
+                    }
+                `;
+            
+                const shaderModule = device.createShaderModule({
+                    code: src_shaders,
+                });
+            
+                const bindGroups = {
+                    body: createBindGroup(device, bindGroupLayout, uniformBuffers.body, sampler, colorTexture),
+                    turret: createBindGroup(device, bindGroupLayout, uniformBuffers.turret, sampler, colorTexture),
+                    barrel: createBindGroup(device, bindGroupLayout, uniformBuffers.barrel, sampler, colorTexture),
+                };
+
+                const pipeline = device.createRenderPipeline({
+                    layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+                    vertex: {
+                        module: shaderModule,
+                        entryPoint: "main_vert",
+                        buffers: [
+                            {
+                                arrayStride: 4 * 3,
+                                attributes: [{ format: "float32x3", offset: 0, shaderLocation: 0 }],
+                            },
+                            {
+                                arrayStride: 4 * 3,
+                                attributes: [{ format: "float32x3", offset: 0, shaderLocation: 1 }],
+                            },
+                            {
+                                arrayStride: 4 * 2,
+                                attributes: [{ format: "float32x2", offset: 0, shaderLocation: 2 }],
+                            },
+                        ],
+                    },
+                    fragment: {
+                        module: shaderModule,
+                        entryPoint: "main_frag",
+                        targets: [{ format: preferredFormat }],
+                    },
+                    primitive: { topology: "triangle-list" },
+                    depthStencil: {
+                        depthWriteEnabled: true,
+                        depthCompare: "less",
+                        format: format_depth_texture,
+                    },
+                });
+            
+                // 렌더링 함수
+                function render(renderPass, baseMatrix) {
+                    const stack = [mat4.identity()];
+                    let MVP = stack[stack.length - 1];
+            
+                    // Body
+                    renderPass.setPipeline(pipeline);
+                    renderPass.setVertexBuffer(0, buffers.body.position);
+                    renderPass.setVertexBuffer(1, buffers.body.normal);
+                    renderPass.setVertexBuffer(2, buffers.body.uv);
+                    renderPass.setIndexBuffer(buffers.body.index, "uint32");
+                    stack.push(mat4.translate(mat4.clone(MVP), [...bodyNode.position])); // body 위치
+                    MVP = stack[stack.length - 1];
+                    worldValue.set(MVP);
+                    worldViewProjectionValue.set(mat4.multiply(baseMatrix, MVP));
+                    device.queue.writeBuffer(uniformBuffers.body, 0, uniformValues);
+                    renderPass.setBindGroup(0, bindGroups.body);
+                    renderPass.drawIndexed(buffers.body.count);
+            
+                    // Turret
+                    stack.push(mat4.translate(mat4.clone(MVP), [...turretNode.position])); // Turret 위치
+                    MVP = stack[stack.length - 1];
+                    worldValue.set(mat4.translate(mat4.clone(MVP), [...buffers.turret.localPosition]));
+                    worldViewProjectionValue.set(mat4.multiply(baseMatrix, worldValue));
+                    renderPass.setVertexBuffer(0, buffers.turret.position);
+                    renderPass.setVertexBuffer(1, buffers.turret.normal);
+                    renderPass.setVertexBuffer(2, buffers.turret.uv);
+                    renderPass.setIndexBuffer(buffers.turret.index, "uint32");
+                    device.queue.writeBuffer(uniformBuffers.turret, 0, uniformValues);
+                    renderPass.setBindGroup(0, bindGroups.turret);
+                    renderPass.drawIndexed(buffers.turret.count);
+            
+                    // Barrel
+                    stack.push(mat4.translate(mat4.clone(MVP), [...barrelNode.position])); // Barrel 위치
+                    MVP = stack[stack.length - 1];
+                    worldValue.set(mat4.translate(mat4.clone(MVP), [...buffers.barrel.localPosition]))
+                    worldViewProjectionValue.set(mat4.multiply(baseMatrix, worldValue));
+                    renderPass.setVertexBuffer(0, buffers.barrel.position);
+                    renderPass.setVertexBuffer(1, buffers.barrel.normal);
+                    renderPass.setVertexBuffer(2, buffers.barrel.uv);
+                    renderPass.setIndexBuffer(buffers.barrel.index, "uint32");
+                    device.queue.writeBuffer(uniformBuffers.barrel, 0, uniformValues);
+                    renderPass.setBindGroup(0, bindGroups.barrel);
+                    renderPass.drawIndexed(buffers.barrel.count);
+            
+                    stack.pop(); // Barrel
+                    stack.pop(); // Turret
+                }
+            
+                return { render };
+            }
+
+            function createGridAndAxes(device, preferredFormat) {
+                const gridSize = 10;
+                const gridDivision = 10;
+                const gridLines = [];
+                const gridColor = [0.5, 0.5, 0.5]; // gray
+                const axisColors = {
+                    x: [1, 0, 0], // red
+                    y: [0, 1, 0], // green
+                    z: [0, 0, 1], // blue
+                    xNegative: [0.3, 0, 0], // dark red
+                    yNegative: [0, 0.3, 0], // dark green
+                    zNegative: [0, 0, 0.3], // dark blue
+                };
+            
+                // Create grid data
+                for (let i = -gridSize; i <= gridSize; i++) {
+                    const pos = (i / gridDivision) * gridSize;
+                    
+                    // exclude axis grid
+                    if (i === 0) continue;
+
+                    gridLines.push(-gridSize, 0, pos, ...gridColor);
+                    gridLines.push(gridSize, 0, pos, ...gridColor);
+                    gridLines.push(pos, 0, -gridSize, ...gridColor);
+                    gridLines.push(pos, 0, gridSize, ...gridColor);
+                }
+            
+                // Create axis data (X, Y, Z axis bi-direction)
+                const axisLines = [
+                    // X axis
+                    0, 0, 0, ...axisColors.x, 10, 0, 0, ...axisColors.x,
+                    0, 0, 0, ...axisColors.xNegative, -10, 0, 0, ...axisColors.xNegative,
+            
+                    // Y axis
+                    0, 0, 0, ...axisColors.y, 0, 10, 0, ...axisColors.y,
+                    0, 0, 0, ...axisColors.yNegative, 0, -10, 0, ...axisColors.yNegative,
+            
+                    // Z axis
+                    0, 0, 0, ...axisColors.z, 0, 0, 10, ...axisColors.z,
+                    0, 0, 0, ...axisColors.zNegative, 0, 0, -10, ...axisColors.zNegative,
+                ];
+            
+                const lineData = new Float32Array([...gridLines, ...axisLines]);
+            
+                const lineBuffer = device.createBuffer({
+                    size: lineData.byteLength,
+                    usage: GPUBufferUsage.VERTEX,
+                    mappedAtCreation: true,
+                });
+                new Float32Array(lineBuffer.getMappedRange()).set(lineData);
+                lineBuffer.unmap();
+            
+                const lineVertexCount = lineData.length / 6;
+            
+                const uniformBuffer = device.createBuffer({
+                    size: 64,
+                    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                });
+            
+                const lineShader = device.createShaderModule({
+                    label: "solid line shader",
+                    code: `
+                    struct Uniforms {
+                        MVP: mat4x4<f32>,
+                    };
+            
+                    @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+            
+                    struct VertexOutput {
+                        @builtin(position) position: vec4<f32>,
+                        @location(0) color: vec3<f32>,
+                    };
+            
+                    @vertex
+                    fn main_vertex(
+                        @location(0) position: vec3<f32>,
+                        @location(1) color: vec3<f32>
+                    ) -> VertexOutput {
+                        var output: VertexOutput;
+                        output.position = uniforms.MVP * vec4<f32>(position, 1.0);
+                        output.color = color;
+                        return output;
+                    }
+            
+                    @fragment
+                    fn main_fragment(
+                        @location(0) color: vec3<f32>
+                    ) -> @location(0) vec4<f32> {
+                        return vec4<f32>(color, 1.0);
+                    }
+                    `,
+                });
+            
+                const pipeline = device.createRenderPipeline({
+                    label: "solid line pipeline",
+                    layout: "auto",
+                    vertex: {
+                        module: lineShader,
+                        entryPoint: "main_vertex",
+                        buffers: [
+                            {
+                                arrayStride: 4 * 6, // position (vec3) + color (vec3)
+                                attributes: [
+                                    { shaderLocation: 0, format: "float32x3", offset: 0 },
+                                    { shaderLocation: 1, format: "float32x3", offset: 4 * 3 },
+                                ],
+                            },
+                        ],
+                    },
+                    fragment: {
+                        module: lineShader,
+                        entryPoint: "main_fragment",
+                        targets: [{ format: preferredFormat }],
+                    },
+                    primitive: {
+                        topology: "line-list",
+                    },
+                    depthStencil: {
+                        depthWriteEnabled: true,
+                        depthCompare: "less",
+                        format: format_depth_texture,
+                    },
+                });
+            
+                const bindGroup = device.createBindGroup({
+                    layout: pipeline.getBindGroupLayout(0),
+                    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+                });
+            
+                return {
+                    render(renderPass, MVP) {
+                        renderPass.setPipeline(pipeline);
+                        renderPass.setBindGroup(0, bindGroup);
+                        device.queue.writeBuffer(uniformBuffer, 0, MVP);
+                        renderPass.setVertexBuffer(0, lineBuffer);
+                        renderPass.draw(lineVertexCount);
+                    },
+                };
+            }
+
+            async function getTexture(device, texture_url) {
+                const response = await fetch(texture_url);
+                const blob = await response.blob();
+                const bitmap = await createImageBitmap(blob, { colorSpaceConversion: "none" });
+                const texture = device.createTexture({
+                    label: texture_url,
+                    format: "rgba8unorm",
+                    size: [bitmap.width, bitmap.height],
+                    usage:  GPUTextureUsage.TEXTURE_BINDING |
+                            GPUTextureUsage.COPY_DST |
+                            GPUTextureUsage.RENDER_ATTACHMENT,
+                });
+                device.queue.copyExternalImageToTexture(
+                    { source: bitmap, flipY: true },
+                    { texture: texture },
+                    { width: bitmap.width, height: bitmap.height },
+                );
+                return texture;
+            }
+
+            function createBindGroup(device, layout, uniformBuffer, sampler, colorTexture) {
+                return device.createBindGroup({
+                    layout,
+                    entries: [
+                        { binding: binding_matrices, resource: { buffer: uniformBuffer } },
+                        { binding: binding_sampler, resource: sampler },               
+                        { binding: binding_color_texture, resource: colorTexture.createView() } 
+                    ],
+                });
+            }
+
+            function createBindGroupLayout(device) {
+                return device.createBindGroupLayout({
+                    entries: [
+                        { binding: binding_matrices, visibility: GPUShaderStage.VERTEX, buffer: {} },
+                        { binding: binding_sampler, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+                        { binding: binding_color_texture, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+                    ],
+                });
+            }
+
+            // https://github.com/g-truc/glm/blob/master/glm/ext/matrix_projection.inl
+            function project(p_obj, MVP, viewport)
+            {
+                let tmp = vec4.transformMat4(p_obj, MVP);
+                tmp = tmp.map((x) => x/tmp[3]); // tmp /= tmp[3]
+                for(let i=0 ; i<2 ; i++) {
+                    tmp[i] = (0.5*tmp[i] + 0.5) * viewport[i+2] + viewport[i];
+                }
+                return tmp;
+            }
+            
+            // https://github.com/g-truc/glm/blob/master/glm/ext/matrix_projection.inl
+            function unproject(p_win, MVP, viewport) {
+                let MVP_inv = mat4.invert(MVP);
+                let tmp = mat4.clone(p_win);
+            
+                for (let i = 0; i < 2; i++)
+                    tmp[i] = 2.0 * (tmp[i] - viewport[i]) / viewport[i+2] - 1.0;
+            
+                let p_obj = vec4.transformMat4(tmp, MVP_inv);
+            
+                p_obj = p_obj.map((x) => x/p_obj[3]);
+            
+                return p_obj;
+            }
+
+            function unproject_vector(vec_win, MVP, viewport)
+            {
+                let org_win = project([0,0,0,1], MVP, viewport);
+                let vec = unproject([org_win[0]+vec_win[0], org_win[1]+vec_win[1], org_win[2]+vec_win[2], 1],
+                                    MVP, viewport);
+                return vec;
+            }
+
+
+
+
+            main();
+        </script>
+
+        <table align="center">
+            <tbody><tr><td>
+                <div align="center">
+                    <canvas id="webgpu" width="640," height="480">
+                    </canvas>
+                </div>
+            </td></tr>
+            <tr><td>
+                <ul>
+                    <li>rotation: dragging with left mouse button</li>
+                    <li>moving forward/backward: mouse wheel</li>
+                    <li>translation (left/right/up/down): dragging with middle mouse button</li>
+                </ul>
+            </td></tr>
+        </tbody></table>
+
+    
+
+</body></html>
